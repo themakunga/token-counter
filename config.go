@@ -59,9 +59,6 @@ const credentialsTemplate = `# token-counter credentials
 # agents:
 #   openai:
 #     api_key: ""   # platform.openai.com/api-keys  (permissions: Usage → Read)
-#
-#   codeen:
-#     api_key: ""   # your Codeen / corporate proxy token
 `
 
 func loadConfig() (*Config, error) {

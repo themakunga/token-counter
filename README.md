@@ -65,14 +65,37 @@ release/v1.1.0                        ●──────  → tag v1.1.0 (est
 - **`release/vX.Y.Z`** → crea el tag `vX.Y.Z` y publica la release estable
 - No existe rama `develop` ni `staging` — los fixes van a `main` primero
 
-### Compilar desde fuente
+### Compilar e instalar desde el repo
 
 ```bash
 git clone https://github.com/TU-USUARIO/token-counter
 cd token-counter
-go build -ldflags="-X main.version=$(git describe --tags --always)" -o token-counter .
-mv token-counter /usr/local/bin/
+make install          # compila con versión e instala en /usr/local/bin
 ```
+
+Destino personalizado:
+```bash
+make install PREFIX=~/.local/bin
+```
+
+#### Actualizar a la última versión de `main`
+
+```bash
+cd token-counter
+make update           # git pull + recompila + reinstala
+```
+
+#### Otros comandos
+
+| Comando | Acción |
+|---------|--------|
+| `make build` | Compila el binario localmente |
+| `make run` | Ejecuta sin compilar (`go run .`) |
+| `make install` | Compila e instala en `PREFIX` (default `/usr/local/bin`) |
+| `make uninstall` | Elimina el binario instalado |
+| `make update` | `git pull` + `make install` |
+| `make dist` | Cross-compila para darwin/linux × amd64/arm64 en `dist/` |
+| `make clean` | Elimina binario local y carpeta `dist/` |
 
 Al primer arranque se crean automáticamente:
 - `~/.config/token-counter/config.yaml` — configuración con valores por defecto
@@ -165,40 +188,12 @@ Sin key, la columna muestra `— no key —` sin bloquear la app.
 
 ---
 
-### Codeen — proxy corporativo de IA
-
-> **Sección en construcción.** Codeen es la plataforma interna que enruta tus requests a modelos de IA.
-
-Para agregar soporte, necesito saber:
-1. ¿Hay una URL de API para consultar métricas de uso? (ej. `/v1/usage` o similar)
-2. ¿Cómo se autentica? (token, cookie, SSO)
-3. ¿Qué formato retorna? (tokens, costo, ambos)
-
-Una vez definido, se implementa un nuevo `Provider` en `providers.go`:
-
-```go
-type codeenProvider struct{ cfg AgentConfig; apiKey string }
-
-func (c *codeenProvider) Name() string { return c.cfg.Name }
-
-func (c *codeenProvider) Fetch(ctx context.Context) ([]PeriodUsage, error) {
-    // TODO: llamar al endpoint de Codeen
-}
-```
-
-Y se registra en `buildProviders()` con `case "codeen":`.
-
----
-
 ## Credenciales (`~/.token-counter.yaml`)
 
 ```yaml
 agents:
   openai:
     api_key: "sk-proj-XXXXXXXXXXXXXXXXXXXXXXXX"
-
-  # codeen:
-  #   api_key: "tu-token-de-codeen"
 ```
 
 Permisos recomendados: `chmod 600 ~/.token-counter.yaml`
@@ -233,15 +228,6 @@ agents:
       weekly: 2000000
       monthly: 8000000
 
-  # - id: codeen
-  #   name: "Codeen"
-  #   enabled: true
-  #   monthly_budget: 0
-  #   limits:
-  #     hourly: 0
-  #     daily: 0
-  #     weekly: 0
-  #     monthly: 0
 ```
 
 ---
