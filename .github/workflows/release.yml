@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    branches: ['release/v*']
+    branches: ["release/v*"]
 
 permissions:
   contents: write
@@ -15,7 +15,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: "1.22"
           cache: true
 
       - name: Extract version from branch name

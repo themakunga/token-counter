@@ -8,10 +8,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Credentials is loaded from ~/.token-counter.yaml
+// Credentials is loaded from ~/.token-counter.yaml — keep this file private (chmod 600).
 type Credentials struct {
 	Agents map[string]struct {
-		APIKey string `yaml:"api_key"`
+		APIKey     string `yaml:"api_key"`
+		GatewayURL string `yaml:"gateway_url"` // vertex: Cosmos gateway base URL
+		ProjectID  string `yaml:"project_id"`  // vertex: GCP project ID (sensitive)
 	} `yaml:"agents"`
 }
 
@@ -43,6 +45,12 @@ var defaultConfig = Config{
 			ID: "claude", Name: "Claude Code", Enabled: true,
 			Limits: Limits{Hourly: 100_000, Daily: 1_000_000, Weekly: 5_000_000, Monthly: 20_000_000},
 		},
+		// vertex: alternative to "claude" for users routing through a Vertex/Cosmos gateway.
+		// Enable this and set enabled: false on "claude" to avoid double-counting.
+		{
+			ID: "vertex", Name: "Claude / Vertex", Enabled: false,
+			Limits: Limits{Hourly: 100_000, Daily: 1_000_000, Weekly: 5_000_000, Monthly: 20_000_000},
+		},
 		{
 			ID: "openai", Name: "OpenAI / Codex", Enabled: true,
 			Limits: Limits{Hourly: 50_000, Daily: 500_000, Weekly: 2_000_000, Monthly: 8_000_000},
@@ -52,13 +60,17 @@ var defaultConfig = Config{
 
 // credentialsTemplate is written on first run — no secrets, just a guide.
 const credentialsTemplate = `# token-counter credentials
-# chmod 600 ~/.token-counter.yaml   ← keep this file private
+# chmod 600 ~/.token-counter.yaml   ← keep this file private, never commit it
 #
 # Uncomment and fill in only the keys you actually use.
 #
 # agents:
 #   openai:
-#     api_key: ""   # platform.openai.com/api-keys  (permissions: Usage → Read)
+#     api_key: ""        # platform.openai.com/api-keys  (permissions: Usage → Read)
+#
+#   vertex:
+#     gateway_url: "http://localhost:8150"   # Cosmos gateway (default; change if port differs)
+#     project_id:  ""                        # SENSITIVE — your GCP project ID
 `
 
 func loadConfig() (*Config, error) {

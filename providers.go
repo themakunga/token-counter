@@ -49,6 +49,18 @@ func buildProviders(cfg *Config, creds *Credentials) []Provider {
 		switch ac.ID {
 		case "claude":
 			out = append(out, &claudeProvider{cfg: ac})
+		case "vertex":
+			var gatewayURL, projectID string
+			if creds.Agents != nil {
+				if c, ok := creds.Agents["vertex"]; ok {
+					gatewayURL = c.GatewayURL
+					projectID = c.ProjectID
+				}
+			}
+			if gatewayURL == "" {
+				gatewayURL = "http://localhost:8150" // Cosmos gateway default
+			}
+			out = append(out, &vertexProvider{cfg: ac, gatewayURL: gatewayURL, projectID: projectID})
 		case "openai", "codex":
 			out = append(out, &openAIProvider{cfg: ac, apiKey: apiKey})
 		}
@@ -57,16 +69,11 @@ func buildProviders(cfg *Config, creds *Credentials) []Provider {
 	return out
 }
 
-// ─── Claude Code (local JSONL) ───────────────────────────────────────────────
+// ─── Shared JSONL reader ─────────────────────────────────────────────────────
 //
-// Data source: ~/.claude/projects/**/*.jsonl
-// No credentials needed — files are local to the machine.
-// Each line with type:"assistant" carries message.usage.{input,output}_tokens
-// and a top-level timestamp in RFC3339.
-
-type claudeProvider struct{ cfg AgentConfig }
-
-func (c *claudeProvider) Name() string { return c.cfg.Name }
+// Claude Code writes ~/.claude/projects/**/*.jsonl for every session,
+// regardless of whether it routes to Anthropic API directly or via Vertex.
+// Both claudeProvider and vertexProvider read from here.
 
 type claudeEntry struct {
 	Type      string `json:"type"`
@@ -103,7 +110,9 @@ type fileTotals struct {
 	costs  [4]float64
 }
 
-func (c *claudeProvider) Fetch(_ context.Context) ([]PeriodUsage, error) {
+// fetchFromJSONL scans ~/.claude/projects/**/*.jsonl and returns usage for all
+// four windows. Shared by claudeProvider and vertexProvider.
+func fetchFromJSONL(cfg AgentConfig) ([]PeriodUsage, error) {
 	now := time.Now().UTC()
 	cutoffs := [4]time.Time{
 		now.Add(-time.Hour),           // hourly
@@ -130,10 +139,10 @@ func (c *claudeProvider) Fetch(_ context.Context) ([]PeriodUsage, error) {
 	}
 
 	return []PeriodUsage{
-		{Period: "hourly", Tokens: totals.tokens[0], Limit: c.cfg.Limits.Hourly, Cost: totals.costs[0]},
-		{Period: "daily", Tokens: totals.tokens[1], Limit: c.cfg.Limits.Daily, Cost: totals.costs[1]},
-		{Period: "weekly", Tokens: totals.tokens[2], Limit: c.cfg.Limits.Weekly, Cost: totals.costs[2]},
-		{Period: "monthly", Tokens: totals.tokens[3], Limit: c.cfg.Limits.Monthly, Cost: totals.costs[3], Budget: c.cfg.MonthlyBudget},
+		{Period: "hourly", Tokens: totals.tokens[0], Limit: cfg.Limits.Hourly, Cost: totals.costs[0]},
+		{Period: "daily", Tokens: totals.tokens[1], Limit: cfg.Limits.Daily, Cost: totals.costs[1]},
+		{Period: "weekly", Tokens: totals.tokens[2], Limit: cfg.Limits.Weekly, Cost: totals.costs[2]},
+		{Period: "monthly", Tokens: totals.tokens[3], Limit: cfg.Limits.Monthly, Cost: totals.costs[3], Budget: cfg.MonthlyBudget},
 	}, nil
 }
 
@@ -175,6 +184,42 @@ func parseClaudeJSONL(path string, cutoffs [4]time.Time) (ft fileTotals) {
 	return
 }
 
+// ─── Claude Code (direct API) ────────────────────────────────────────────────
+
+type claudeProvider struct{ cfg AgentConfig }
+
+func (c *claudeProvider) Name() string { return c.cfg.Name }
+
+func (c *claudeProvider) Fetch(_ context.Context) ([]PeriodUsage, error) {
+	return fetchFromJSONL(c.cfg)
+}
+
+// ─── Claude Code via Vertex AI (Cosmos gateway) ──────────────────────────────
+//
+// Data source: same ~/.claude/projects/**/*.jsonl as claudeProvider.
+// Claude Code writes usage locally regardless of routing (direct or Vertex).
+//
+// Credentials (~/.token-counter.yaml) — never commit these values:
+//   agents:
+//     vertex:
+//       gateway_url: "http://localhost:8150"   # local Cosmos proxy
+//       project_id:  "<your-gcp-project-id>"  # SENSITIVE
+//
+// ponytail: JSONL is the authoritative source. Extend Fetch() to query
+// the gateway's /metrics or /usage endpoint when one is documented.
+
+type vertexProvider struct {
+	cfg        AgentConfig
+	gatewayURL string // e.g. http://localhost:8150 — not sensitive (localhost)
+	projectID  string // GCP project ID — SENSITIVE, credentials only
+}
+
+func (v *vertexProvider) Name() string { return v.cfg.Name }
+
+func (v *vertexProvider) Fetch(_ context.Context) ([]PeriodUsage, error) {
+	return fetchFromJSONL(v.cfg)
+}
+
 // ─── OpenAI / Codex ──────────────────────────────────────────────────────────
 //
 // Data source: https://api.openai.com/v1/organization/usage/completions
@@ -193,8 +238,6 @@ func (o *openAIProvider) Fetch(ctx context.Context) ([]PeriodUsage, error) {
 		return noKeyUsage(o.cfg), nil
 	}
 	now := time.Now()
-	// One call per window — OpenAI usage API returns small payloads.
-	results := make([]PeriodUsage, 3)
 	windows := []struct {
 		period string
 		start  time.Time
@@ -205,6 +248,7 @@ func (o *openAIProvider) Fetch(ctx context.Context) ([]PeriodUsage, error) {
 		{"weekly", now.Add(-7 * 24 * time.Hour), o.cfg.Limits.Weekly},
 		{"monthly", now.Add(-30 * 24 * time.Hour), o.cfg.Limits.Monthly},
 	}
+	results := make([]PeriodUsage, len(windows))
 	for i, w := range windows {
 		tokens, err := o.fetchWindow(ctx, w.start, now)
 		if err != nil {

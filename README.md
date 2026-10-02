@@ -1,6 +1,7 @@
 # token-counter
 
-Terminal TUI que muestra el uso de tokens y costo mensual estimado de tus agentes de IA en tiempo real.
+Terminal TUI que muestra el uso de tokens y costo mensual estimado de tus agentes de IA en tiempo
+real.
 
 ```
 ╭────────────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -18,8 +19,8 @@ Terminal TUI que muestra el uso de tokens y costo mensual estimado de tus agente
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
-**Colores:** 🟢 < 50% del límite · 🟡 50–80% · 🔴 > 80%  
-**Monthly spend:** colorea según porcentaje del presupuesto configurado.
+**Colores:** 🟢 < 50% del límite · 🟡 50–80% · 🔴 > 80% **Monthly spend:** colorea según porcentaje
+del presupuesto configurado.
 
 ---
 
@@ -27,10 +28,10 @@ Terminal TUI que muestra el uso de tokens y costo mensual estimado de tus agente
 
 ### Binarios pre-compilados (recomendado)
 
-| Canal | Cuándo usar | Link |
-|-------|-------------|------|
-| **Estable** | Producción / uso diario | [Última versión](../../releases/latest) |
-| **Nightly** | Probar cambios recientes de `main` | [nightly](../../releases/tag/nightly) |
+| Canal       | Cuándo usar                        | Link                                    |
+| ----------- | ---------------------------------- | --------------------------------------- |
+| **Estable** | Producción / uso diario            | [Última versión](../../releases/latest) |
+| **Nightly** | Probar cambios recientes de `main` | [nightly](../../releases/tag/nightly)   |
 
 Descarga el binario para tu plataforma y muévelo al PATH:
 
@@ -48,6 +49,7 @@ curl -L .../token-counter-linux-amd64 -o /usr/local/bin/token-counter && chmod +
 ```
 
 Verificar checksum (recomendado):
+
 ```bash
 sha256sum -c checksums.txt
 ```
@@ -74,6 +76,7 @@ make install          # compila con versión e instala en /usr/local/bin
 ```
 
 Destino personalizado:
+
 ```bash
 make install PREFIX=~/.local/bin
 ```
@@ -87,17 +90,18 @@ make update           # git pull + recompila + reinstala
 
 #### Otros comandos
 
-| Comando | Acción |
-|---------|--------|
-| `make build` | Compila el binario localmente |
-| `make run` | Ejecuta sin compilar (`go run .`) |
-| `make install` | Compila e instala en `PREFIX` (default `/usr/local/bin`) |
-| `make uninstall` | Elimina el binario instalado |
-| `make update` | `git pull` + `make install` |
-| `make dist` | Cross-compila para darwin/linux × amd64/arm64 en `dist/` |
-| `make clean` | Elimina binario local y carpeta `dist/` |
+| Comando          | Acción                                                   |
+| ---------------- | -------------------------------------------------------- |
+| `make build`     | Compila el binario localmente                            |
+| `make run`       | Ejecuta sin compilar (`go run .`)                        |
+| `make install`   | Compila e instala en `PREFIX` (default `/usr/local/bin`) |
+| `make uninstall` | Elimina el binario instalado                             |
+| `make update`    | `git pull` + `make install`                              |
+| `make dist`      | Cross-compila para darwin/linux × amd64/arm64 en `dist/` |
+| `make clean`     | Elimina binario local y carpeta `dist/`                  |
 
 Al primer arranque se crean automáticamente:
+
 - `~/.config/token-counter/config.yaml` — configuración con valores por defecto
 - `~/.token-counter.yaml` — plantilla de credenciales (sin secrets, permisos 600)
 
@@ -107,8 +111,8 @@ Al primer arranque se crean automáticamente:
 
 ### Claude Code — archivos locales (sin credenciales)
 
-Lee directamente `~/.claude/projects/**/*.jsonl`. Cada sesión de Claude Code
-guarda un JSONL con entradas `type:"assistant"` que incluyen:
+Lee directamente `~/.claude/projects/**/*.jsonl`. Cada sesión de Claude Code guarda un JSONL con
+entradas `type:"assistant"` que incluyen:
 
 ```json
 {
@@ -126,18 +130,19 @@ guarda un JSONL con entradas `type:"assistant"` que incluyen:
 }
 ```
 
-**Requisito:** tener Claude Code instalado (`~/.claude/projects/` existe).  
-**Sin API key.** El costo se estima automáticamente según el modelo (sonnet / opus / haiku).
+**Requisito:** tener Claude Code instalado (`~/.claude/projects/` existe). **Sin API key.** El costo
+se estima automáticamente según el modelo (sonnet / opus / haiku).
 
 **Precios aproximados usados:**
 
-| Familia  | Input   | Output   | Cache create | Cache read |
-|----------|---------|----------|--------------|------------|
-| Sonnet   | $3/M    | $15/M    | $3.75/M      | $0.30/M    |
-| Opus     | $15/M   | $75/M    | $18.75/M     | $1.50/M    |
-| Haiku    | $0.80/M | $4/M     | $1.00/M      | $0.08/M    |
+| Familia | Input   | Output | Cache create | Cache read |
+| ------- | ------- | ------ | ------------ | ---------- |
+| Sonnet  | $3/M    | $15/M  | $3.75/M      | $0.30/M    |
+| Opus    | $15/M   | $75/M  | $18.75/M     | $1.50/M    |
+| Haiku   | $0.80/M | $4/M   | $1.00/M      | $0.08/M    |
 
-> Los precios se detectan por nombre de modelo. Si Anthropic cambia precios, actualiza la función `claudeCost` en `providers.go`.
+> Los precios se detectan por nombre de modelo. Si Anthropic cambia precios, actualiza la función
+> `claudeCost` en `providers.go`.
 
 ---
 
@@ -182,9 +187,52 @@ curl "https://api.openai.com/v1/organization/usage/costs?start_time=$(date -v-30
   -H "Authorization: Bearer sk-proj-..."
 ```
 
-El costo en el TUI se estima con una tasa promedio de ~$3/M tokens. Para mayor precisión usa el dashboard.
+El costo en el TUI se estima con una tasa promedio de ~$3/M tokens. Para mayor precisión usa el
+dashboard.
 
 Sin key, la columna muestra `— no key —` sin bloquear la app.
+
+---
+
+### Claude Code vía Vertex AI (gateway corporativo)
+
+Para usuarios que acceden a Claude a través de un proxy/gateway local (ej. Cosmos GenAI Gateway en
+`localhost:8150`).
+
+**Fuente de datos:** los mismos archivos `~/.claude/projects/**/*.jsonl` que el provider `claude` —
+Claude Code los escribe localmente sin importar si el routing es directo o vía Vertex.
+
+**Activar el provider `vertex`** en `~/.config/token-counter/config.yaml`:
+
+```yaml
+agents:
+  - id: claude
+    enabled: false # ← desactivar para no contar dos veces
+    name: "Claude Code"
+    limits: { ... }
+
+  - id: vertex
+    enabled: true
+    name: "Claude / Vertex"
+    monthly_budget: 50.00
+    limits:
+      hourly: 100000
+      daily: 1000000
+      weekly: 5000000
+      monthly: 20000000
+```
+
+**Agregar credenciales** en `~/.token-counter.yaml` (sensible, no commitear):
+
+```yaml
+agents:
+  vertex:
+    gateway_url: "http://localhost:8150" # URL base del gateway (no sensible)
+    project_id: "tu-gcp-project-id" # SENSIBLE — ID del proyecto GCP
+```
+
+> ⚠️ El `project_id` es información sensible. Nunca lo incluyas en el repositorio. El archivo
+> `~/.token-counter.yaml` debe tener permisos `600` y estar fuera del repo.
 
 ---
 
@@ -194,6 +242,10 @@ Sin key, la columna muestra `— no key —` sin bloquear la app.
 agents:
   openai:
     api_key: "sk-proj-XXXXXXXXXXXXXXXXXXXXXXXX"
+
+  # vertex:
+  #   gateway_url: "http://localhost:8150"
+  #   project_id:  "tu-gcp-project-id"    # SENSIBLE
 ```
 
 Permisos recomendados: `chmod 600 ~/.token-counter.yaml`
@@ -211,7 +263,7 @@ agents:
   - id: claude
     name: "Claude Code"
     enabled: true
-    monthly_budget: 50.00   # USD — 0 = sin presupuesto configurado
+    monthly_budget: 50.00 # USD — 0 = sin presupuesto configurado
     limits:
       hourly: 100000
       daily: 1000000
@@ -227,14 +279,13 @@ agents:
       daily: 500000
       weekly: 2000000
       monthly: 8000000
-
 ```
 
 ---
 
 ## Controles
 
-| Tecla | Acción |
-|-------|--------|
-| `r` | Refresh manual |
-| `q` / `ctrl+c` | Salir |
+| Tecla          | Acción         |
+| -------------- | -------------- |
+| `r`            | Refresh manual |
+| `q` / `ctrl+c` | Salir          |
