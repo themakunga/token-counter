@@ -9,14 +9,17 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
-// PeriodUsage holds token count for one time window.
+// PeriodUsage holds token count and cost for one time window.
 type PeriodUsage struct {
-	Period string // "hourly" | "daily" | "weekly"
+	Period string // "hourly" | "daily" | "weekly" | "monthly"
 	Tokens int64
 	Limit  int64
+	Cost   float64 // USD estimated; 0 if unavailable
+	Budget float64 // USD monthly budget; 0 = not configured
 }
 
 // Provider fetches token usage for one agent.
@@ -69,6 +72,7 @@ type claudeEntry struct {
 	Type      string `json:"type"`
 	Timestamp string `json:"timestamp"`
 	Message   struct {
+		Model string `json:"model"`
 		Usage struct {
 			InputTokens              int64 `json:"input_tokens"`
 			OutputTokens             int64 `json:"output_tokens"`
@@ -78,26 +82,47 @@ type claudeEntry struct {
 	} `json:"message"`
 }
 
+// claudeCost returns estimated USD cost for one assistant turn.
+// ponytail: prefix-match by family; update prices when Anthropic reprices.
+func claudeCost(model string, input, output, cacheCreate, cacheRead int64) float64 {
+	var in, out, cc, cr float64
+	switch {
+	case strings.Contains(model, "opus"):
+		in, out, cc, cr = 15, 75, 18.75, 1.50
+	case strings.Contains(model, "haiku"):
+		in, out, cc, cr = 0.80, 4, 1.00, 0.08
+	default: // sonnet and unrecognised → sonnet tier
+		in, out, cc, cr = 3, 15, 3.75, 0.30
+	}
+	return (float64(input)*in + float64(output)*out + float64(cacheCreate)*cc + float64(cacheRead)*cr) / 1_000_000
+}
+
+// fileTotals accumulates tokens and USD cost per window from one JSONL file.
+type fileTotals struct {
+	tokens [4]int64
+	costs  [4]float64
+}
+
 func (c *claudeProvider) Fetch(_ context.Context) ([]PeriodUsage, error) {
 	now := time.Now().UTC()
 	cutoffs := [4]time.Time{
-		now.Add(-time.Hour),          // hourly
-		now.Add(-24 * time.Hour),     // daily
-		now.Add(-7 * 24 * time.Hour), // weekly
+		now.Add(-time.Hour),           // hourly
+		now.Add(-24 * time.Hour),      // daily
+		now.Add(-7 * 24 * time.Hour),  // weekly
 		now.Add(-30 * 24 * time.Hour), // monthly (rolling 30d)
 	}
-	var totals [4]int64
+	var totals fileTotals
 
 	root := filepath.Join(os.Getenv("HOME"), ".claude", "projects")
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || filepath.Ext(path) != ".jsonl" {
 			return nil
 		}
-		h, da, w, mo := parseClaudeJSONL(path, cutoffs)
-		totals[0] += h
-		totals[1] += da
-		totals[2] += w
-		totals[3] += mo
+		ft := parseClaudeJSONL(path, cutoffs)
+		for i := range totals.tokens {
+			totals.tokens[i] += ft.tokens[i]
+			totals.costs[i] += ft.costs[i]
+		}
 		return nil
 	})
 	if err != nil && os.IsNotExist(err) {
@@ -105,14 +130,14 @@ func (c *claudeProvider) Fetch(_ context.Context) ([]PeriodUsage, error) {
 	}
 
 	return []PeriodUsage{
-		{Period: "hourly", Tokens: totals[0], Limit: c.cfg.Limits.Hourly},
-		{Period: "daily", Tokens: totals[1], Limit: c.cfg.Limits.Daily},
-		{Period: "weekly", Tokens: totals[2], Limit: c.cfg.Limits.Weekly},
-		{Period: "monthly", Tokens: totals[3], Limit: c.cfg.Limits.Monthly},
+		{Period: "hourly", Tokens: totals.tokens[0], Limit: c.cfg.Limits.Hourly, Cost: totals.costs[0]},
+		{Period: "daily", Tokens: totals.tokens[1], Limit: c.cfg.Limits.Daily, Cost: totals.costs[1]},
+		{Period: "weekly", Tokens: totals.tokens[2], Limit: c.cfg.Limits.Weekly, Cost: totals.costs[2]},
+		{Period: "monthly", Tokens: totals.tokens[3], Limit: c.cfg.Limits.Monthly, Cost: totals.costs[3], Budget: c.cfg.MonthlyBudget},
 	}, nil
 }
 
-func parseClaudeJSONL(path string, cutoffs [4]time.Time) (hourly, daily, weekly, monthly int64) {
+func parseClaudeJSONL(path string, cutoffs [4]time.Time) (ft fileTotals) {
 	f, err := os.Open(path)
 	if err != nil {
 		return
@@ -129,7 +154,6 @@ func parseClaudeJSONL(path string, cutoffs [4]time.Time) (hourly, daily, weekly,
 		}
 		ts, err := time.Parse(time.RFC3339, e.Timestamp)
 		if err != nil {
-			// try millisecond variant: "2006-01-02T15:04:05.000Z"
 			ts, err = time.Parse("2006-01-02T15:04:05.000Z", e.Timestamp)
 			if err != nil {
 				continue
@@ -140,17 +164,12 @@ func parseClaudeJSONL(path string, cutoffs [4]time.Time) (hourly, daily, weekly,
 		if tokens == 0 {
 			continue
 		}
-		if ts.After(cutoffs[3]) {
-			monthly += tokens
-		}
-		if ts.After(cutoffs[2]) {
-			weekly += tokens
-		}
-		if ts.After(cutoffs[1]) {
-			daily += tokens
-		}
-		if ts.After(cutoffs[0]) {
-			hourly += tokens
+		cost := claudeCost(e.Message.Model, u.InputTokens, u.OutputTokens, u.CacheCreationInputTokens, u.CacheReadInputTokens)
+		for i, cutoff := range cutoffs {
+			if ts.After(cutoff) {
+				ft.tokens[i] += tokens
+				ft.costs[i] += cost
+			}
 		}
 	}
 	return
@@ -191,20 +210,28 @@ func (o *openAIProvider) Fetch(ctx context.Context) ([]PeriodUsage, error) {
 		if err != nil {
 			return nil, fmt.Errorf("openai %s: %w", w.period, err)
 		}
-		results[i] = PeriodUsage{Period: w.period, Tokens: tokens, Limit: w.limit}
+		cost := float64(tokens) * openAIRatePerM / 1_000_000
+		budget := 0.0
+		if w.period == "monthly" {
+			budget = o.cfg.MonthlyBudget
+		}
+		results[i] = PeriodUsage{Period: w.period, Tokens: tokens, Limit: w.limit, Cost: cost, Budget: budget}
 	}
 	return results, nil
 }
 
-// noKeyUsage returns zero-count rows so the table still shows the agent.
+// noKeyUsage returns no-key sentinel rows so the table still shows the agent.
 func noKeyUsage(cfg AgentConfig) []PeriodUsage {
 	return []PeriodUsage{
-		{Period: "hourly", Tokens: -1, Limit: cfg.Limits.Hourly}, // -1 = no key
+		{Period: "hourly", Tokens: -1, Limit: cfg.Limits.Hourly},
 		{Period: "daily", Tokens: -1, Limit: cfg.Limits.Daily},
 		{Period: "weekly", Tokens: -1, Limit: cfg.Limits.Weekly},
-		{Period: "monthly", Tokens: -1, Limit: cfg.Limits.Monthly},
+		{Period: "monthly", Tokens: -1, Limit: cfg.Limits.Monthly, Budget: cfg.MonthlyBudget},
 	}
 }
+
+// ponytail: blended ~$3/M for OpenAI; add per-model breakdown if accuracy matters.
+const openAIRatePerM = 3.0
 
 type openAIResp struct {
 	Data []struct {

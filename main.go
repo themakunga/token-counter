@@ -11,6 +11,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// version is set at build time via -ldflags="-X main.version=vX.Y.Z"
+var version = "dev"
+
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 var (
@@ -71,11 +74,13 @@ func fmtTokens(n int64) string {
 // ─── Display row ─────────────────────────────────────────────────────────────
 
 type dRow struct {
-	name    string
-	hourly  cell
-	daily   cell
-	weekly  cell
-	monthly cell
+	name          string
+	hourly        cell
+	daily         cell
+	weekly        cell
+	monthly       cell
+	monthlyCost   float64 // USD
+	monthlyBudget float64 // USD; 0 = not configured
 }
 
 func statusDot(r dRow) string {
@@ -87,6 +92,21 @@ func statusDot(r dRow) string {
 		return sYellow.Render("●")
 	default:
 		return sGreen.Render("●")
+	}
+}
+
+func costStyle(spent, budget float64) lipgloss.Style {
+	if budget <= 0 {
+		return sGreen
+	}
+	pct := spent / budget
+	switch {
+	case pct > 0.8:
+		return sRed
+	case pct > 0.5:
+		return sYellow
+	default:
+		return sGreen
 	}
 }
 
@@ -151,6 +171,8 @@ func (m model) doFetch() tea.Cmd {
 					r.weekly = c
 				case "monthly":
 					r.monthly = c
+					r.monthlyCost = u.Cost
+					r.monthlyBudget = u.Budget
 				}
 			}
 			rows = append(rows, r)
@@ -231,6 +253,30 @@ func (m model) View() string {
 			b.WriteString(padTo(r.weekly.render(), wPeriod) + sep)
 			b.WriteString(padTo(r.monthly.render(), wPeriod) + sep)
 			b.WriteString(statusDot(r))
+			b.WriteByte('\n')
+		}
+	}
+
+	// Monthly cost section
+	var hasCost bool
+	for _, r := range m.rows {
+		if r.monthlyCost > 0 {
+			hasCost = true
+			break
+		}
+	}
+	if hasCost && !m.loading {
+		b.WriteString(sDim.Render(strings.Repeat("─", divWidth)))
+		b.WriteByte('\n')
+		b.WriteString(sBold.Render("Monthly spend") + "\n")
+		for _, r := range m.rows {
+			b.WriteString(padTo("  "+r.name, wAgent+2) + "  ")
+			spent := fmt.Sprintf("$%.2f", r.monthlyCost)
+			b.WriteString(costStyle(r.monthlyCost, r.monthlyBudget).Render(spent))
+			if r.monthlyBudget > 0 {
+				avail := r.monthlyBudget - r.monthlyCost
+				b.WriteString(sDim.Render(fmt.Sprintf("  / $%.2f budget  ($%.2f avail)", r.monthlyBudget, avail)))
+			}
 			b.WriteByte('\n')
 		}
 	}

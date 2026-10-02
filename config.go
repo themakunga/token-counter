@@ -22,10 +22,11 @@ type Config struct {
 }
 
 type AgentConfig struct {
-	ID      string `yaml:"id"`
-	Name    string `yaml:"name"`
-	Enabled bool   `yaml:"enabled"`
-	Limits  Limits `yaml:"limits"`
+	ID            string  `yaml:"id"`
+	Name          string  `yaml:"name"`
+	Enabled       bool    `yaml:"enabled"`
+	Limits        Limits  `yaml:"limits"`
+	MonthlyBudget float64 `yaml:"monthly_budget"` // USD; 0 = not set
 }
 
 type Limits struct {
