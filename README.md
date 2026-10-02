@@ -23,15 +23,60 @@ Terminal TUI que muestra el uso de tokens y costo mensual estimado de tus agente
 
 ---
 
-## Instalación
+## Descarga
+
+### Binarios pre-compilados (recomendado)
+
+| Canal | Cuándo usar | Link |
+|-------|-------------|------|
+| **Estable** | Producción / uso diario | [Última versión](../../releases/latest) |
+| **Nightly** | Probar cambios recientes de `main` | [nightly](../../releases/tag/nightly) |
+
+Descarga el binario para tu plataforma y muévelo al PATH:
 
 ```bash
+# macOS Apple Silicon (ejemplo v1.0.0)
+curl -L https://github.com/TU-USUARIO/token-counter/releases/download/v1.0.0/token-counter-darwin-arm64 \
+  -o /usr/local/bin/token-counter
+chmod +x /usr/local/bin/token-counter
+
+# macOS Intel
+curl -L .../token-counter-darwin-amd64 -o /usr/local/bin/token-counter && chmod +x $_
+
+# Linux amd64
+curl -L .../token-counter-linux-amd64 -o /usr/local/bin/token-counter && chmod +x $_
+```
+
+Verificar checksum (recomendado):
+```bash
+sha256sum -c checksums.txt
+```
+
+### Modelo de ramas (Trunk-Based Development)
+
+```
+main            ──────●──────●──────●──────  → nightly (inestable, cada push)
+                            ╲
+release/v1.0.0               ●──────────────  → tag v1.0.0 (estable)
+release/v1.1.0                        ●──────  → tag v1.1.0 (estable)
+```
+
+- **`main`** → compilación nightly automática en cada push
+- **`release/vX.Y.Z`** → crea el tag `vX.Y.Z` y publica la release estable
+- No existe rama `develop` ni `staging` — los fixes van a `main` primero
+
+### Compilar desde fuente
+
+```bash
+git clone https://github.com/TU-USUARIO/token-counter
 cd token-counter
-go mod tidy
-go build -o token-counter .
-# opcional: mover al PATH
+go build -ldflags="-X main.version=$(git describe --tags --always)" -o token-counter .
 mv token-counter /usr/local/bin/
 ```
+
+Al primer arranque se crean automáticamente:
+- `~/.config/token-counter/config.yaml` — configuración con valores por defecto
+- `~/.token-counter.yaml` — plantilla de credenciales (sin secrets, permisos 600)
 
 ---
 

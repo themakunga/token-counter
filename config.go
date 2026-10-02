@@ -50,11 +50,30 @@ var defaultConfig = Config{
 	},
 }
 
+// credentialsTemplate is written on first run — no secrets, just a guide.
+const credentialsTemplate = `# token-counter credentials
+# chmod 600 ~/.token-counter.yaml   ← keep this file private
+#
+# Uncomment and fill in only the keys you actually use.
+#
+# agents:
+#   openai:
+#     api_key: ""   # platform.openai.com/api-keys  (permissions: Usage → Read)
+#
+#   codeen:
+#     api_key: ""   # your Codeen / corporate proxy token
+`
+
 func loadConfig() (*Config, error) {
 	path := filepath.Join(os.Getenv("HOME"), ".config", "token-counter", "config.yaml")
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		cfg := defaultConfig
+		// best-effort: write defaults so user has a file to edit
+		if raw, yerr := yaml.Marshal(cfg); yerr == nil {
+			_ = os.MkdirAll(filepath.Dir(path), 0o755)
+			_ = os.WriteFile(path, raw, 0o644)
+		}
 		return &cfg, nil
 	}
 	if err != nil {
@@ -68,6 +87,8 @@ func loadCredentials() (*Credentials, error) {
 	path := filepath.Join(os.Getenv("HOME"), ".token-counter.yaml")
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
+		// write a commented template — no secrets, owner-only permissions
+		_ = os.WriteFile(path, []byte(credentialsTemplate), 0o600)
 		return &Credentials{}, nil
 	}
 	if err != nil {

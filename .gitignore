@@ -1,0 +1,6 @@
+# built binary
+token-counter
+token-counter-*
+
+# release artifacts
+dist/

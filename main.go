@@ -287,10 +287,10 @@ func (m model) View() string {
 	if m.loading {
 		b.WriteString(sDim.Render("refreshing…"))
 	} else {
-		b.WriteString(sDim.Render(
-			"last: " + m.lastFetch.Format("15:04:05") +
-				"  •  r=refresh  q=quit",
-		))
+		b.WriteString(sDim.Render(fmt.Sprintf(
+			"last: %s  •  %s  •  r=refresh  q=quit",
+			m.lastFetch.Format("15:04:05"), version,
+		)))
 	}
 	b.WriteByte('\n')
 
