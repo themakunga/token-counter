@@ -4,3 +4,7 @@ token-counter-*
 
 # release artifacts
 dist/
+
+# nix build results
+result
+result-*

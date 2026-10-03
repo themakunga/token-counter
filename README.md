@@ -67,6 +67,48 @@ release/v1.1.0                        ●──────  → tag v1.1.0 (est
 - **`release/vX.Y.Z`** → crea el tag `vX.Y.Z` y publica la release estable
 - No existe rama `develop` ni `staging` — los fixes van a `main` primero
 
+### Nix Flakes
+
+```bash
+# ejecutar sin instalar
+nix run github:themakunga/token-counter
+
+# instalar en el perfil de usuario
+nix profile install github:themakunga/token-counter
+
+# entrar al devShell (go + pre-commit listos)
+nix develop github:themakunga/token-counter
+```
+
+Desde un clon local:
+
+```bash
+nix run .        # ejecutar
+nix build .      # compila → ./result/bin/token-counter
+nix develop .    # devShell
+```
+
+#### Primera vez: obtener el vendorHash
+
+El `flake.nix` incluye un hash placeholder. Al hacer `nix build` por primera vez fallará mostrando
+el hash correcto:
+
+```
+error: hash mismatch in fixed-output derivation:
+  specified: sha256-AAAA...
+  got:       sha256-AbCdEf...   ← copia este valor
+```
+
+Reemplaza el valor en `flake.nix`:
+
+```nix
+vendorHash = "sha256-AbCdEf...";   # el hash real
+```
+
+Luego commitea `flake.nix` y `flake.lock` juntos.
+
+---
+
 ### Compilar e instalar desde el repo
 
 ```bash
