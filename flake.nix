@@ -1,54 +1,30 @@
 {
-  description = "token-counter — terminal TUI for AI token usage and cost";
+  description = "Terminal TUI for AI token usage and cost tracking";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
-  outputs = { self, nixpkgs }:
-    let
-      systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
-      forAll = nixpkgs.lib.genAttrs systems;
-    in
-    {
-      packages = forAll (system:
-        let
-          pkgs = nixpkgs.legacyPackages.${system};
-          version = self.shortRev or "dev";
-        in
-        {
-          default = pkgs.buildGoModule {
-            pname = "token-counter";
-            inherit version;
-            src = ./.;
-
-            # Run `nix build` once — it will fail and print the correct hash.
-            # Replace this value with what it prints.
-            vendorHash = "sha256-J8weZ5B3Jz+VCLhXKPfzhxGTj7B+VwgUAOFBCvYKSeE=";
-
-            ldflags = [ "-s" "-w" "-X main.version=${version}" ];
-
-            meta = with nixpkgs.lib; {
-              description = "Terminal TUI for AI token usage and cost monitoring";
-              homepage = "https://github.com/themakunga/token-counter";
-              license = licenses.mit;
-              mainProgram = "token-counter";
-              platforms = platforms.unix;
-            };
-          };
-        });
-
-      apps = forAll (system: {
-        default = {
-          type = "app";
-          program = "${self.packages.${system}.default}/bin/token-counter";
+  outputs = {
+    self,
+    nixpkgs,
+  }: let
+    systems = ["x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin"];
+    forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+  in {
+    packages = forAllSystems (pkgs: rec {
+      token-counter = pkgs.buildGoModule {
+        pname = "token-counter";
+        version = "0.3.0";
+        src = self;
+        vendorHash = "sha256-J8weZ5B3Jz+VCLhXKPfzhxGTj7B+VwgUAOFBCvYKSeE=";
+        meta = with pkgs.lib; {
+          description = "Terminal TUI for AI token usage and cost tracking";
+          homepage = "https://github.com/themakunga/token-counter";
+          license = licenses.mit;
+          platforms = platforms.unix;
+          mainProgram = "token-counter";
         };
-      });
-
-      devShells = forAll (system:
-        let pkgs = nixpkgs.legacyPackages.${system}; in
-        {
-          default = pkgs.mkShell {
-            packages = with pkgs; [ go pre-commit ];
-          };
-        });
-    };
+      };
+      default = token-counter;
+    });
+  };
 }
