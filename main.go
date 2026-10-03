@@ -300,6 +300,11 @@ func (m model) View() string {
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 func main() {
+	if len(os.Args) == 2 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Println(version)
+		return
+	}
+
 	cfg, err := loadConfig()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "config error:", err)
