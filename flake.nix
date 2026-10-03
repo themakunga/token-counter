@@ -13,7 +13,7 @@
     packages = forAllSystems (pkgs: rec {
       token-counter = pkgs.buildGoModule {
         pname = "token-counter";
-        version = "0.3.0";
+        version = "0.3.1";
         src = self;
         vendorHash = "sha256-J8weZ5B3Jz+VCLhXKPfzhxGTj7B+VwgUAOFBCvYKSeE=";
         meta = with pkgs.lib; {
