@@ -22,7 +22,7 @@
 
             # Run `nix build` once — it will fail and print the correct hash.
             # Replace this value with what it prints.
-            vendorHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+            vendorHash = "sha256-J8weZ5B3Jz+VCLhXKPfzhxGTj7B+VwgUAOFBCvYKSeE=";
 
             ldflags = [ "-s" "-w" "-X main.version=${version}" ];
 
