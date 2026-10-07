@@ -65,19 +65,24 @@ release/v1.1.0                        ●──────  → tag v1.1.0 (est
 
 - **`main`** → compilación nightly automática en cada push
 - **`release/vX.Y.Z`** → crea el tag `vX.Y.Z` y publica la release estable
+- El pipeline valida Go y Nix antes de publicar. Escribe la versión en `VERSION`, la incluye en el
+  commit etiquetado y comprueba que el binario Nix responde `vX.Y.Z` a `--version`. Solo después de
+  publicar avanza el tag `stable`.
+- Los tags `vX.Y.Z` son inmutables. Una release anterior no puede reemplazar una versión estable más
+  reciente; `nightly` nunca avanza `stable`.
 - No existe rama `develop` ni `staging` — los fixes van a `main` primero
 
 ### Nix Flakes
 
 ```bash
 # ejecutar sin instalar
-nix run github:themakunga/token-counter
+nix run github:themakunga/token-counter/stable
 
 # instalar en el perfil de usuario
-nix profile install github:themakunga/token-counter
+nix profile install github:themakunga/token-counter/stable
 
-# entrar al devShell (go + pre-commit listos)
-nix develop github:themakunga/token-counter
+# actualizar una instalación existente del canal estable
+nix profile upgrade token-counter
 ```
 
 Desde un clon local:
@@ -85,13 +90,22 @@ Desde un clon local:
 ```bash
 nix run .        # ejecutar
 nix build .      # compila → ./result/bin/token-counter
-nix develop .    # devShell
 ```
 
-#### Primera vez: obtener el vendorHash
+El canal `stable` se crea con la primera release del nuevo pipeline. Para una instalación
+reproducible de una versión concreta usa `/vX.Y.Z` en lugar de `/stable`. La rama `main` contiene
+desarrollo y no es el canal estable.
 
-El `flake.nix` incluye un hash placeholder. Al hacer `nix build` por primera vez fallará mostrando
-el hash correcto:
+Para consumidores como `nix-systems`, la referencia debe ser un tag estable, no un SHA antiguo.
+`scripts/update-token-counter.py` consulta la última release publicada, cambia únicamente esa
+referencia y actualiza su entrada del lock; el workflow semanal existente incluye ambos cambios en
+su PR. Se requiere aplicar ese PR y reconstruir el sistema para actualizar una instalación del
+sistema. Un rebuild por sí solo conserva las revisiones de `flake.lock`.
+
+#### Cambios en dependencias de Go
+
+El `flake.nix` incluye un `vendorHash` válido. Si cambian las dependencias, Nix puede señalar el
+nuevo hash necesario:
 
 ```
 error: hash mismatch in fixed-output derivation:
@@ -175,20 +189,62 @@ entradas `type:"assistant"` que incluyen:
 **Requisito:** tener Claude Code instalado (`~/.claude/projects/` existe). **Sin API key.** El costo
 se estima automáticamente según el modelo (sonnet / opus / haiku).
 
-**Precios aproximados usados:**
+Assistant content blocks are deduplicated by request/message ID across local logs. Repeated
+input/cache counts are not added again; the final output count is retained. Token windows remain
+rolling, while Claude's USD spend and budget use the current calendar month in the machine's local
+timezone.
 
-| Familia | Input   | Output | Cache create | Cache read |
-| ------- | ------- | ------ | ------------ | ---------- |
-| Sonnet  | $3/M    | $15/M  | $3.75/M      | $0.30/M    |
-| Opus    | $15/M   | $75/M  | $18.75/M     | $1.50/M    |
-| Haiku   | $0.80/M | $4/M   | $1.00/M      | $0.08/M    |
+**Precios aproximados usados (USD por millón de tokens):**
+
+| Familia          | Input   | Output | Cache create | Cache read |
+| ---------------- | ------- | ------ | ------------ | ---------- |
+| Sonnet           | $3/M    | $15/M  | $3.75/M      | $0.30/M    |
+| Opus 4.5–4.8 / 5 | $5/M    | $25/M  | $6.25/M      | $0.50/M    |
+| Opus 5.5         | $4/M    | $20/M  | $5/M         | $0.20/M    |
+| Opus 4 / 4.1     | $15/M   | $75/M  | $18.75/M     | $1.50/M    |
+| Haiku            | $0.80/M | $4/M   | $1.00/M      | $0.08/M    |
 
 > Los precios se detectan por nombre de modelo. Si Anthropic cambia precios, actualiza la función
 > `claudeCost` en `providers.go`.
 
+One-hour cache writes use their 2x input rate when reported by Claude Code. The displayed monthly
+spend and remaining budget are estimates from retained local logs, including cache charges. They are
+not the gateway's official balance.
+
 ---
 
-### OpenAI / Codex — API de uso
+### Codex — local session usage
+
+When `~/.codex/sessions` exists, the existing `openai` entry automatically reads local Codex JSONL
+usage instead of querying organization API usage. `id: codex` always uses local sessions;
+`CODEX_HOME` is respected. No API key is needed. Set `source: codex` to select local usage
+explicitly, or `source: api` to keep tracking the OpenAI API organization separately.
+
+The counter sums changes in cumulative `total_token_usage.total_tokens`, so repeated usage snapshots
+are not counted twice. Cached input and reasoning tokens are already included in the reported total
+and are not added again. Only locally retained sessions are included; cloud-only or deleted history
+is not reconstructed. Hourly, daily, weekly, and monthly columns use rolling 1-hour, 24-hour, 7-day,
+and 30-day windows.
+
+Configured token limits remain visible. They are monitoring thresholds, not Codex subscription
+limits or enforcement controls. Local logs do not report billed USD, so the spend section displays
+`USD unavailable (local usage)`; a configured dollar budget remains visible without inventing
+remaining funds. Subscription usage and API billing are separate.
+
+```yaml
+agents:
+  - id: codex
+    name: Codex
+    enabled: true
+    source: codex
+    limits:
+      hourly: 50000
+      daily: 500000
+      weekly: 2000000
+      monthly: 8000000
+```
+
+### OpenAI — API organization usage (`source: api`)
 
 Usa el endpoint `GET /v1/organization/usage/completions`.
 
@@ -232,11 +288,17 @@ curl "https://api.openai.com/v1/organization/usage/costs?start_time=$(date -v-30
 El costo en el TUI se estima con una tasa promedio de ~$3/M tokens. Para mayor precisión usa el
 dashboard.
 
-Sin key, la columna muestra `— no key —` sin bloquear la app.
+Sin key, la columna muestra `— unavailable —` junto al límite configurado.
 
 ---
 
 ### Claude Code vía Vertex AI (gateway corporativo)
+
+For Codeen with a USD 300 monthly allowance, enable only `vertex` (disable the `claude` entry to
+avoid counting the same logs twice), set `name: Claude / Codeen` and `monthly_budget: 300`. No
+gateway credentials are needed for local log usage. Codeen's startup, telemetry HTTP 200 and
+shutdown request counts do not report remaining budget. `stats.jsonl` with zero `accumulated_cost`
+cannot establish that usage was free or that all USD 300 remain available.
 
 Para usuarios que acceden a Claude a través de un proxy/gateway local (ej. Cosmos GenAI Gateway en
 `localhost:8150`).

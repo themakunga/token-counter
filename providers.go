@@ -15,11 +15,13 @@ import (
 
 // PeriodUsage holds token count and cost for one time window.
 type PeriodUsage struct {
-	Period string // "hourly" | "daily" | "weekly" | "monthly"
-	Tokens int64
-	Limit  int64
-	Cost   float64 // USD estimated; 0 if unavailable
-	Budget float64 // USD monthly budget; 0 = not configured
+	Period          string // "hourly" | "daily" | "weekly" | "monthly"
+	Tokens          int64
+	Limit           int64
+	Cost            float64 // USD total (includes cache_read)
+	NetCost         float64 // USD without cache_read — new tokens only
+	Budget          float64 // USD monthly budget; 0 = not configured
+	CostUnavailable bool    // local Codex logs do not report billed USD
 }
 
 // Provider fetches token usage for one agent.
@@ -62,7 +64,12 @@ func buildProviders(cfg *Config, creds *Credentials) []Provider {
 			}
 			out = append(out, &vertexProvider{cfg: ac, gatewayURL: gatewayURL, projectID: projectID})
 		case "openai", "codex":
-			out = append(out, &openAIProvider{cfg: ac, apiKey: apiKey})
+			_, localErr := os.Stat(filepath.Join(codexHome(), "sessions"))
+			if ac.Source == "codex" || (ac.Source != "api" && (ac.ID == "codex" || localErr == nil)) {
+				out = append(out, &codexProvider{cfg: ac})
+			} else {
+				out = append(out, &openAIProvider{cfg: ac, apiKey: apiKey})
+			}
 		}
 		// ponytail: unknown IDs silently skipped; add a generic HTTP provider when needed
 	}
@@ -78,13 +85,18 @@ func buildProviders(cfg *Config, creds *Credentials) []Provider {
 type claudeEntry struct {
 	Type      string `json:"type"`
 	Timestamp string `json:"timestamp"`
+	RequestID string `json:"requestId"`
 	Message   struct {
+		ID    string `json:"id"`
 		Model string `json:"model"`
 		Usage struct {
 			InputTokens              int64 `json:"input_tokens"`
 			OutputTokens             int64 `json:"output_tokens"`
 			CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
 			CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+			CacheCreation            struct {
+				OneHour int64 `json:"ephemeral_1h_input_tokens"`
+			} `json:"cache_creation"`
 		} `json:"usage"`
 	} `json:"message"`
 }
@@ -94,10 +106,16 @@ type claudeEntry struct {
 func claudeCost(model string, input, output, cacheCreate, cacheRead int64) float64 {
 	var in, out, cc, cr float64
 	switch {
+	case strings.Contains(model, "opus-5-5"):
+		in, out, cc, cr = 4, 20, 5, 0.20
+	case strings.Contains(model, "opus-4-5") || strings.Contains(model, "opus-4-6") || strings.Contains(model, "opus-4-7") || strings.Contains(model, "opus-4-8") || strings.Contains(model, "opus-5"):
+		in, out, cc, cr = 5, 25, 6.25, 0.50
 	case strings.Contains(model, "opus"):
 		in, out, cc, cr = 15, 75, 18.75, 1.50
 	case strings.Contains(model, "haiku"):
 		in, out, cc, cr = 0.80, 4, 1.00, 0.08
+	case strings.Contains(model, "sonnet-5"):
+		in, out, cc, cr = 2, 10, 2.50, 0.20
 	default: // sonnet and unrecognised → sonnet tier
 		in, out, cc, cr = 3, 15, 3.75, 0.30
 	}
@@ -106,14 +124,15 @@ func claudeCost(model string, input, output, cacheCreate, cacheRead int64) float
 
 // fileTotals accumulates tokens and USD cost per window from one JSONL file.
 type fileTotals struct {
-	tokens [4]int64
-	costs  [4]float64
+	tokens   [4]int64
+	costs    [4]float64 // total cost including cache_read
+	netCosts [4]float64 // cost without cache_read (new tokens only)
 }
 
 // fetchFromJSONL scans ~/.claude/projects/**/*.jsonl and returns usage for all
 // four windows. Shared by claudeProvider and vertexProvider.
 func fetchFromJSONL(cfg AgentConfig) ([]PeriodUsage, error) {
-	now := time.Now().UTC()
+	now := time.Now()
 	cutoffs := [4]time.Time{
 		now.Add(-time.Hour),           // hourly
 		now.Add(-24 * time.Hour),      // daily
@@ -121,67 +140,95 @@ func fetchFromJSONL(cfg AgentConfig) ([]PeriodUsage, error) {
 		now.Add(-30 * 24 * time.Hour), // monthly (rolling 30d)
 	}
 	var totals fileTotals
+	entries := make(map[string]claudeEntry)
 
 	root := filepath.Join(os.Getenv("HOME"), ".claude", "projects")
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || filepath.Ext(path) != ".jsonl" {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || filepath.Ext(path) != ".jsonl" {
 			return nil
 		}
-		ft := parseClaudeJSONL(path, cutoffs)
-		for i := range totals.tokens {
-			totals.tokens[i] += ft.tokens[i]
-			totals.costs[i] += ft.costs[i]
-		}
-		return nil
+		return readClaudeJSONL(path, entries)
 	})
-	if err != nil && os.IsNotExist(err) {
-		return nil, fmt.Errorf("~/.claude/projects not found — is Claude Code installed?")
+	if err != nil {
+		return noKeyUsage(cfg), fmt.Errorf("Claude usage: %w", err)
+	}
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	for _, e := range entries {
+		ts, err := time.Parse(time.RFC3339, e.Timestamp)
+		if err != nil {
+			continue
+		}
+		u := e.Message.Usage
+		tokens := u.InputTokens + u.OutputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
+		cost := claudeCost(e.Message.Model, u.InputTokens, u.OutputTokens, u.CacheCreationInputTokens, u.CacheReadInputTokens)
+		netCost := claudeCost(e.Message.Model, u.InputTokens, u.OutputTokens, u.CacheCreationInputTokens, 0)
+		// One-hour cache writes cost 2x base input instead of the 5m rate's 1.25x.
+		premium := claudeCost(e.Message.Model, 0, 0, u.CacheCreation.OneHour, 0) * 0.6
+		cost += premium
+		netCost += premium
+		for i, cutoff := range cutoffs {
+			if ts.After(cutoff) {
+				totals.tokens[i] += tokens
+			}
+			costCutoff := cutoff
+			if i == 3 {
+				costCutoff = monthStart
+			}
+			if !ts.Before(costCutoff) {
+				totals.costs[i] += cost
+				totals.netCosts[i] += netCost
+			}
+		}
 	}
 
 	return []PeriodUsage{
-		{Period: "hourly", Tokens: totals.tokens[0], Limit: cfg.Limits.Hourly, Cost: totals.costs[0]},
-		{Period: "daily", Tokens: totals.tokens[1], Limit: cfg.Limits.Daily, Cost: totals.costs[1]},
-		{Period: "weekly", Tokens: totals.tokens[2], Limit: cfg.Limits.Weekly, Cost: totals.costs[2]},
-		{Period: "monthly", Tokens: totals.tokens[3], Limit: cfg.Limits.Monthly, Cost: totals.costs[3], Budget: cfg.MonthlyBudget},
+		{Period: "hourly", Tokens: totals.tokens[0], Limit: cfg.Limits.Hourly, Cost: totals.costs[0], NetCost: totals.netCosts[0]},
+		{Period: "daily", Tokens: totals.tokens[1], Limit: cfg.Limits.Daily, Cost: totals.costs[1], NetCost: totals.netCosts[1]},
+		{Period: "weekly", Tokens: totals.tokens[2], Limit: cfg.Limits.Weekly, Cost: totals.costs[2], NetCost: totals.netCosts[2]},
+		{Period: "monthly", Tokens: totals.tokens[3], Limit: cfg.Limits.Monthly, Cost: totals.costs[3], NetCost: totals.netCosts[3], Budget: cfg.MonthlyBudget},
 	}, nil
 }
 
-func parseClaudeJSONL(path string, cutoffs [4]time.Time) (ft fileTotals) {
+func readClaudeJSONL(path string, entries map[string]claudeEntry) error {
 	f, err := os.Open(path)
 	if err != nil {
-		return
+		return err
 	}
 	defer f.Close()
 
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 2*1024*1024), 2*1024*1024) // 2 MB — handles large context dumps
 
+	line := 0
 	for sc.Scan() {
+		line++
 		var e claudeEntry
 		if json.Unmarshal(sc.Bytes(), &e) != nil || e.Type != "assistant" {
 			continue
 		}
-		ts, err := time.Parse(time.RFC3339, e.Timestamp)
-		if err != nil {
-			ts, err = time.Parse("2006-01-02T15:04:05.000Z", e.Timestamp)
-			if err != nil {
-				continue
+		key := e.RequestID + ":" + e.Message.ID
+		if e.Message.ID == "" {
+			key = fmt.Sprintf("%s:%d", path, line)
+		}
+		// Streaming content blocks repeat input/cache usage. Keep one request's
+		// maximum counters, including its final output count, across log copies.
+		if old, ok := entries[key]; ok {
+			u, previous := &e.Message.Usage, old.Message.Usage
+			u.InputTokens = max(u.InputTokens, previous.InputTokens)
+			u.OutputTokens = max(u.OutputTokens, previous.OutputTokens)
+			u.CacheCreationInputTokens = max(u.CacheCreationInputTokens, previous.CacheCreationInputTokens)
+			u.CacheReadInputTokens = max(u.CacheReadInputTokens, previous.CacheReadInputTokens)
+			u.CacheCreation.OneHour = max(u.CacheCreation.OneHour, previous.CacheCreation.OneHour)
+			if e.Timestamp < old.Timestamp {
+				e.Timestamp = old.Timestamp
 			}
 		}
-		u := e.Message.Usage
-		tokens := u.InputTokens + u.OutputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
-		if tokens == 0 {
-			continue
-		}
-		cost := claudeCost(e.Message.Model, u.InputTokens, u.OutputTokens, u.CacheCreationInputTokens, u.CacheReadInputTokens)
-		for i, cutoff := range cutoffs {
-			if ts.After(cutoff) {
-				ft.tokens[i] += tokens
-				ft.costs[i] += cost
-			}
-		}
+		entries[key] = e
 	}
-	return
+	return sc.Err()
 }
 
 // ─── Claude Code (direct API) ────────────────────────────────────────────────
@@ -259,7 +306,7 @@ func (o *openAIProvider) Fetch(ctx context.Context) ([]PeriodUsage, error) {
 		if w.period == "monthly" {
 			budget = o.cfg.MonthlyBudget
 		}
-		results[i] = PeriodUsage{Period: w.period, Tokens: tokens, Limit: w.limit, Cost: cost, Budget: budget}
+		results[i] = PeriodUsage{Period: w.period, Tokens: tokens, Limit: w.limit, Cost: cost, NetCost: cost, Budget: budget}
 	}
 	return results, nil
 }

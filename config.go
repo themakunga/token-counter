@@ -24,6 +24,7 @@ type Config struct {
 }
 
 type AgentConfig struct {
+	Source        string  `yaml:"source"` // auto (default), codex (local), api
 	ID            string  `yaml:"id"`
 	Name          string  `yaml:"name"`
 	Enabled       bool    `yaml:"enabled"`

@@ -44,7 +44,11 @@ func (c cell) pct() float64 {
 
 func (c cell) render() string {
 	if c.tokens < 0 {
-		return sDim.Render("— no key —")
+		s := "— unavailable —"
+		if c.limit > 0 {
+			s += " / " + fmtTokens(c.limit)
+		}
+		return sDim.Render(s)
 	}
 	s := fmtTokens(c.tokens)
 	if c.limit > 0 {
@@ -74,17 +78,23 @@ func fmtTokens(n int64) string {
 // ─── Display row ─────────────────────────────────────────────────────────────
 
 type dRow struct {
-	name          string
-	hourly        cell
-	daily         cell
-	weekly        cell
-	monthly       cell
-	monthlyCost   float64 // USD
-	monthlyBudget float64 // USD; 0 = not configured
+	name            string
+	hourly          cell
+	daily           cell
+	weekly          cell
+	monthly         cell
+	monthlyCost     float64 // USD total (includes cache_read)
+	monthlyNetCost  float64 // USD without cache_read
+	monthlyBudget   float64 // USD; 0 = not configured
+	costUnavailable bool
+	fetchErr        string
 }
 
 func statusDot(r dRow) string {
 	pct := maxPct(r.hourly.pct(), r.daily.pct(), r.weekly.pct(), r.monthly.pct())
+	if r.monthlyBudget > 0 && !r.costUnavailable {
+		pct = maxPct(pct, r.monthlyCost/r.monthlyBudget)
+	}
 	switch {
 	case pct > 0.8:
 		return sRed.Render("●")
@@ -134,6 +144,7 @@ type model struct {
 	lastFetch time.Time
 	loading   bool
 	fetchErr  string
+	width     int
 }
 
 func newModel(cfg *Config, creds *Credentials) model {
@@ -159,6 +170,8 @@ func (m model) doFetch() tea.Cmd {
 			usages, err := p.Fetch(ctx)
 			if err != nil {
 				r.name += " ⚠"
+				r.fetchErr = err.Error()
+				r.hourly.tokens, r.daily.tokens, r.weekly.tokens, r.monthly.tokens = -1, -1, -1, -1
 			}
 			for _, u := range usages {
 				c := cell{tokens: u.Tokens, limit: u.Limit}
@@ -172,7 +185,9 @@ func (m model) doFetch() tea.Cmd {
 				case "monthly":
 					r.monthly = c
 					r.monthlyCost = u.Cost
+					r.monthlyNetCost = u.NetCost
 					r.monthlyBudget = u.Budget
+					r.costUnavailable = u.CostUnavailable
 				}
 			}
 			rows = append(rows, r)
@@ -187,6 +202,8 @@ func (m model) tick() tea.Cmd {
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
@@ -226,18 +243,24 @@ const (
 func (m model) View() string {
 	sep := "  "
 	var b strings.Builder
+	compact := m.width > 0 && m.width < wAgent+wPeriod*4+16
 
 	// Header
-	b.WriteString(padTo(sBold.Render("Agent"), wAgent) + sep)
-	b.WriteString(padTo(sBold.Render("Hourly"), wPeriod) + sep)
-	b.WriteString(padTo(sBold.Render("Daily"), wPeriod) + sep)
-	b.WriteString(padTo(sBold.Render("Weekly"), wPeriod) + sep)
-	b.WriteString(padTo(sBold.Render("Monthly"), wPeriod) + sep)
-	b.WriteString(sBold.Render("⬤"))
-	b.WriteByte('\n')
+	if !compact {
+		b.WriteString(padTo(sBold.Render("Agent"), wAgent) + sep)
+		b.WriteString(padTo(sBold.Render("Hourly"), wPeriod) + sep)
+		b.WriteString(padTo(sBold.Render("Daily"), wPeriod) + sep)
+		b.WriteString(padTo(sBold.Render("Weekly"), wPeriod) + sep)
+		b.WriteString(padTo(sBold.Render("Monthly"), wPeriod) + sep)
+		b.WriteString(sBold.Render("⬤"))
+		b.WriteByte('\n')
+	}
 
 	// Divider
 	divWidth := wAgent + wPeriod*4 + len(sep)*5 + 1
+	if compact {
+		divWidth = max(1, m.width-6)
+	}
 	b.WriteString(sDim.Render(strings.Repeat("─", divWidth)))
 	b.WriteByte('\n')
 
@@ -247,6 +270,13 @@ func (m model) View() string {
 		b.WriteByte('\n')
 	} else {
 		for _, r := range m.rows {
+			if compact {
+				b.WriteString(r.name + " " + statusDot(r) + "\n")
+				for i, c := range []cell{r.hourly, r.daily, r.weekly, r.monthly} {
+					b.WriteString(padTo("  "+[]string{"Hourly", "Daily", "Weekly", "Monthly"}[i], 12) + c.render() + "\n")
+				}
+				continue
+			}
 			b.WriteString(padTo(r.name, wAgent) + sep)
 			b.WriteString(padTo(r.hourly.render(), wPeriod) + sep)
 			b.WriteString(padTo(r.daily.render(), wPeriod) + sep)
@@ -260,7 +290,7 @@ func (m model) View() string {
 	// Monthly cost section
 	var hasCost bool
 	for _, r := range m.rows {
-		if r.monthlyCost > 0 {
+		if r.monthlyCost > 0 || r.monthlyNetCost > 0 || r.monthlyBudget > 0 || r.costUnavailable {
 			hasCost = true
 			break
 		}
@@ -268,20 +298,48 @@ func (m model) View() string {
 	if hasCost && !m.loading {
 		b.WriteString(sDim.Render(strings.Repeat("─", divWidth)))
 		b.WriteByte('\n')
-		b.WriteString(sBold.Render("Monthly spend") + "\n")
+		b.WriteString(sBold.Render("Monthly spend (estimate)") + "\n")
 		for _, r := range m.rows {
-			b.WriteString(padTo("  "+r.name, wAgent+2) + "  ")
+			if compact {
+				b.WriteString("  " + r.name + "\n    ")
+			} else {
+				b.WriteString(padTo("  "+r.name, wAgent+2) + "  ")
+			}
+			if r.costUnavailable || r.monthly.tokens < 0 {
+				label := "USD unavailable"
+				if r.costUnavailable {
+					label += " (local usage)"
+				}
+				b.WriteString(sDim.Render(label))
+				if r.monthlyBudget > 0 {
+					b.WriteString(fmt.Sprintf(" / $%.2f budget", r.monthlyBudget))
+				}
+				b.WriteByte('\n')
+				continue
+			}
 			spent := fmt.Sprintf("$%.2f", r.monthlyCost)
 			b.WriteString(costStyle(r.monthlyCost, r.monthlyBudget).Render(spent))
 			if r.monthlyBudget > 0 {
 				avail := r.monthlyBudget - r.monthlyCost
-				b.WriteString(sDim.Render(fmt.Sprintf("  / $%.2f budget  ($%.2f avail)", r.monthlyBudget, avail)))
+				b.WriteString(sDim.Render(fmt.Sprintf("  / $%.2f budget  ($%.2f estimated left)", r.monthlyBudget, avail)))
+			}
+			// secondary: total with cache_read dimmed
+			if r.monthlyCost > r.monthlyNetCost {
+				if compact {
+					b.WriteString("\n    ")
+				}
+				b.WriteString(sDim.Render(fmt.Sprintf("  [$%.2f cache included]", r.monthlyCost-r.monthlyNetCost)))
 			}
 			b.WriteByte('\n')
 		}
 	}
 
 	b.WriteByte('\n')
+	for _, r := range m.rows {
+		if r.fetchErr != "" {
+			b.WriteString(sRed.Render(r.name+": "+r.fetchErr) + "\n")
+		}
+	}
 
 	// Status bar
 	if m.loading {
