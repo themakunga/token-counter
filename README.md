@@ -1,5 +1,8 @@
 # token-counter
 
+![Go](https://img.shields.io/badge/Go-00ADD8?style=flat-square&logo=go&logoColor=white)
+![Nix](https://img.shields.io/badge/Nix-5277C3?style=flat-square&logo=nixos&logoColor=white)
+
 Terminal TUI que muestra el uso de tokens y costo mensual estimado de tus agentes de IA en tiempo
 real.
 
@@ -393,3 +396,16 @@ agents:
 | -------------- | -------------- |
 | `r`            | Refresh manual |
 | `q` / `ctrl+c` | Salir          |
+
+## Repository reference
+
+| Path                           | Purpose                                 |
+| ------------------------------ | --------------------------------------- |
+| [`Makefile`](Makefile)         | Documented build and validation targets |
+| [`flake.nix`](flake.nix)       | Nix inputs and outputs                  |
+| [`tests/`](tests/)             | Tests and regression checks             |
+| [`config.go`](config.go)       | Project reference                       |
+| [`providers.go`](providers.go) | Project reference                       |
+
+The default branch is `main`. Use the tracked manifests and scripts above when preparing changes;
+keep local credentials and generated files out of commits.
